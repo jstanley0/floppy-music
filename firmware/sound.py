@@ -6,7 +6,7 @@ import utime
 
 # there's no built-in way to do this, so HAX
 # also note that the upper limit on the original Pico is 8
-# and since I have an original Pico and only 3 drives, I
+# and since I have an original Pico and only 4 drives, I
 # haven't tested any more than this!
 def _update_sm_freq(sm, f):
     if f == 0:
@@ -30,7 +30,7 @@ def _reset_drive(base_pin, tracks, target=0):
         utime.sleep_ms(5)
         step.value(1)
         utime.sleep_ms(5)
-    dp.value(1)
+    dp.value(0)
     utime.sleep_ms(50)
     for _ in range(target):
         step.value(0)
@@ -49,8 +49,8 @@ def _scan_prog():
     mov(pins, x)
     mov(y, osr)
     label("step")
-    set(pins, 0)[11]
-    set(pins, 1)[11]
+    set(pins, 0)[14]
+    set(pins, 1)[13]
     jmp(y_dec, "step")
     mov(x, invert(x))[8] # skip a beat when switching directions because physics
     jmp("bounce")
@@ -61,11 +61,11 @@ def _shake_prog():
     pull()
     wrap_target()
     mov(pins, 0)
-    set(pins, 0)[11]
-    set(pins, 1)[11]
+    set(pins, 0)[14]
+    set(pins, 1)[13]
     mov(pins, 1)
-    set(pins, 0)[11]
-    set(pins, 1)[11]
+    set(pins, 0)[14]
+    set(pins, 1)[13]
     
 # GPIO 0 = drive 0 select
 # GPIO 1 = drive 0 direction
@@ -97,7 +97,7 @@ class Sound:
         self.drive_select_pins[drive].value(1)
 
     def play(self, drive, freq):
-        if _update_sm_freq(drive, freq * 25):
+        if _update_sm_freq(drive, freq * 30):
             self.drive_select_pins[drive].value(0)
             self.state_machines[drive].active(1)
         else:

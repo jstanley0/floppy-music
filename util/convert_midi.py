@@ -35,6 +35,9 @@ class Event:
         self.notes_off.extend(prior_note_off_event.notes_off)
 
 class Encoder:
+    MAX_FREQ=640
+    MIN_FREQ=64
+
     def __init__(self, num_drives, all_channels, priority_channels):
         self.num_drives = num_drives
         self.notes_playing = [Note(None, None)] * num_drives
@@ -91,24 +94,37 @@ class Encoder:
             return self.events[-1].timestamp
         return 0
 
-    def _find_lru_available_voice(self):
-        voice = None
-        for v in range(self.num_drives):
-            playing = self.notes_playing[v]
-            if not playing.midi_note:
-                if voice == None or playing.timestamp < self.notes_playing[voice].timestamp:
-                    voice = v
-        return voice
+    def _find_available_voice(self, note):
+        return self._channel_affinity_voice(note.channel)
+        # with no decay, and voices that sound different, this is hard
+        if voice is None:
+            return None
+        for _ in range(self.num_drives):
+            playing = self.notes_playing[voice]
+            if playing.midi_note is None:
+                return voice
+            voice = (voice + 1) % self.num_drives
+        return None
+
+    def _channel_affinity_voice(self, channel):
+        # TODO cli option for specifying channel affinity (this is clearly hacked for a specific midi)
+        match channel:
+            case 1 | 7:
+                return 2
+            case 8:
+                return 3
+            case _:
+                return 0
 
     def _place_note(self, note):
         if note.channel not in self.all_channels:
             return None
 
-        # find the least-recently used slot
-        voice = self._find_lru_available_voice()
+        # find a slot, using channel affinity
+        voice = self._find_available_voice(note)
         if voice:
             return voice
-
+        
         # all channels are busy: possibly preempt a playing note
         preempt_candidates = []
         for v in range(self.num_drives):
@@ -160,12 +176,20 @@ class Encoder:
         if notes_off_mask != 0:
             self._write_notes_off(notes_off_mask)
 
-    # note on: V = voice; N = note
+    def _note_frequency(self, midi_note):
+        freq = 440.0 * pow(2, (midi_note - 69.0) / 12)
+        while freq > self.MAX_FREQ:
+            freq /= 2
+        while freq < self.MIN_FREQ:
+            freq *= 2
+        return round(freq)
+
+    # note on: V = voice; F = frequency
     # 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-    #  0  0 V3 V2 V1 V0  0  0  0 N6 N5 N4 N3 N2 N1 N0
+    #  0 V3 V2 V1 V0 FA F9 F8 F7 F6 F5 F4 F3 F2 F1 F0
     def _write_note_on(self, voice, note):
-        u16 = (voice & 0xf) << 10
-        u16 |= (note & 0x7F)
+        u16 = (voice & 0xf) << 11
+        u16 |= self._note_frequency(note)
         self._write16(u16)
 
     # delay: D = delay in milliseconds

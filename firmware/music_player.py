@@ -18,7 +18,9 @@ def read_words(filename):
 
 class MusicPlayer:
     def __init__(self):
-        self.sound = Sound()
+        # scanning is generally quieter than shaking; I use this method
+        # on my 5.25" drive which would be too loud otherwise
+        self.sound = Sound(1 << 2)
 
     def play_song(self, filename):
         try:
@@ -73,3 +75,4 @@ class MusicPlayer:
         for voice in range(12):
             if 0 != (mask & (1 << voice)):
                 self.sound.stop(voice)
+

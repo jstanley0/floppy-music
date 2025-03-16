@@ -52,7 +52,7 @@ def _reset_drives(count, scan_mask, tracks):
 @asm_pio(out_init=(PIO.OUT_HIGH), set_init=(PIO.OUT_HIGH))
 def _scan_prog():
     pull()
-    mov(x, 0)
+    mov(x, 1)
     label("bounce")
     mov(pins, x)
     mov(y, osr)

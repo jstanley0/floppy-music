@@ -6,12 +6,9 @@ from pico_connection import PicoConnection
 
 parser = ArgumentParser(description='Convert MIDI file for floppy_music')
 parser.add_argument('infile', type=str, help='input midi file')
-parser.add_argument('-d', '--num_drives', type=int, default=4, help='number of drives to target (default 4)')
-parser.add_argument('-p', '--prioritize-channels', type=int, metavar='CHANNEL', nargs='*',
-                    help='give specific channels priority when filling voices')
-parser.add_argument('-x', '--exclude-channels', type=int, metavar='CHANNEL', nargs='*',
-                    help='exclude certain channels from the output file')
 parser.add_argument('outfile', type=str, help='output binary file, or use - to stream to the Pico')
+parser.add_argument('orchestration', type=str, metavar='CHANNEL', nargs='+',
+                    help='assign midi channels to drives (one argument per drive, each argument a comma-separated prioritized list; use a negative number to pick the lowest note in a chord)')
 args = parser.parse_args()
 
 class Note:
@@ -20,6 +17,12 @@ class Note:
         self.channel = channel
         self.velocity = velocity
         self.timestamp = timestamp
+
+    def __eq__(self, other):
+        if not isinstance(other, Note):
+            return False
+        
+        return self.midi_note == other.midi_note and self.channel == other.channel
 
 class Event:
     def __init__(self, delay, previous_timestamp):
@@ -38,12 +41,11 @@ class Encoder:
     MAX_FREQ=640
     MIN_FREQ=64
 
-    def __init__(self, num_drives, all_channels, priority_channels):
-        self.num_drives = num_drives
-        self.notes_playing = [Note(None, None)] * num_drives
+    def __init__(self, orchestration):
+        self.orchestration = orchestration
+        self.num_drives = len(orchestration)
+        self.notes_playing = [None] * self.num_drives
         self.events = []
-        self.all_channels = all_channels
-        self.priority_channels = priority_channels
 
     def log_delay(self, delay):
         if self.events and not self.events[-1].notes_on and not self.events[-1].notes_off:
@@ -52,9 +54,6 @@ class Encoder:
             self.events.append(Event(delay, self._previous_timestamp()))
 
     def log_note_on(self, note, channel, velocity):
-        if channel == 10:
-            # no percussion
-            return
         event = self._ensure_event()
         event.notes_on.append(Note(note, channel, velocity, timestamp=event.timestamp))
 
@@ -94,83 +93,34 @@ class Encoder:
             return self.events[-1].timestamp
         return 0
 
-    def _find_available_voice(self, note):
-        return self._channel_affinity_voice(note.channel)
-        # with no decay, and voices that sound different, this is hard
-        if voice is None:
-            return None
-        for _ in range(self.num_drives):
-            playing = self.notes_playing[voice]
-            if playing.midi_note is None:
-                return voice
-            voice = (voice + 1) % self.num_drives
-        return None
-
-    def _channel_affinity_voice(self, channel):
-        # TODO cli option for specifying channel affinity (this is clearly hacked for a specific midi)
-        match channel:
-            case 1 | 7:
-                return 2
-            case 8:
-                return 3
-            case _:
-                return 0
-
-    def _place_note(self, note):
-        if note.channel not in self.all_channels:
-            return None
-
-        # find a slot, using channel affinity
-        voice = self._find_available_voice(note)
-        if voice:
-            return voice
+    def _find_note_for_voice(self, v, event):
+        # orchestration[v] is a prioritized list of MIDI channels assigned to voice v
+        # where minus n means pick the *lowest* playing note in channel n
+        for ch in self.orchestration[v]:
+            notes = [note for note in event.notes_on if note.channel == abs(ch)]
+            notes.sort(key=lambda note: note.midi_note)
+            if notes:
+                return notes[-1] if ch > 0 else notes[0]
         
-        # all channels are busy: possibly preempt a playing note
-        preempt_candidates = []
-        for v in range(self.num_drives):
-            playing_note = self.notes_playing[v]
-            if playing_note.channel in self.priority_channels:
-                continue    # don't preempt a note in a priority channel
-            # don't preempt a note that started too recently or it'll sound bad
-            if note.channel in self.priority_channels:
-                time_threshold = 0.075
-            else:
-                time_threshold = 0.15
-            if note.channel in priority_channels or note.timestamp - playing_note.timestamp > time_threshold:
-                playing_note.voice = v
-                preempt_candidates.append(playing_note)
-        if preempt_candidates:
-            doomed_note = min(preempt_candidates, key=lambda note: note.timestamp)
-            return doomed_note.voice
-
-        # the note had to be dropped :(
         return None
-
 
     def _write_event(self, event):
         # write delay
         self._write_delay(event.delay)
 
-        # figure notes off
+        # figure notes off and write notes on for each drive
         notes_off_mask = 0
-        for note_off in event.notes_off:
-            for v in range(self.num_drives):
-                if note_off.midi_note == self.notes_playing[v].midi_note and note_off.channel == self.notes_playing[v].channel:
-                    self.notes_playing[v].midi_note = None
-                    self.notes_playing[v].channel = None
-                    # crucially, the timestamp is left alone here; this lets us maximize release time
-                    notes_off_mask |= (1 << v)
+        for v in range(self.num_drives):
+            if self.notes_playing[v] in event.notes_off:
+                self.notes_playing[v] = None
+                notes_off_mask |= (1 << v)
 
-        # write notes on
-        # this looks funny because False sorts before True, but this sorts notes in priority channels first
-        notes_on = sorted(event.notes_on, key=lambda note: note.channel not in self.priority_channels)
-        for note_on in notes_on:
-            v = self._place_note(note_on)
-            if v != None:
+            note_on = self._find_note_for_voice(v, event)
+            if note_on is not None:
                 self.notes_playing[v] = note_on
                 self._write_note_on(v, note_on.midi_note)
                 # no need to write a note-off for this voice if we're starting a new note here now
-                notes_off_mask &= ~(1 << v)
+                notes_off_mask &= ~(1 << v)               
 
         # write remaining notes off, if any
         if notes_off_mask != 0:
@@ -216,33 +166,7 @@ midi = MidiFile(args.infile)
 
 # NOTE: 1 is added to channels to match user-visible channel numbers in e.g. MuseScore
 
-# I feel like there should be a better way to enumerate channels, but whatevs...
-all_channels = set()
-for msg in midi:
-    if msg.type == 'note_on':
-        all_channels.add(msg.channel + 1)
-
-# remove excluded channels
-if args.exclude_channels:
-    all_channels -= set(args.exclude_channels)
-
-# add priority channels
-if args.prioritize_channels:
-    priority_channels = set(args.prioritize_channels)
-else:
-    priority_channels = set()
-    melody_track_pattern = re.compile('melody|vocals', re.I)
-    for track in midi.tracks:
-        if melody_track_pattern.match(track.name):
-            track_channels = set()
-            for msg in track:
-                if msg.type == 'note_on':
-                    track_channels.add(msg.channel + 1)
-            print("{file}: prioritized melody track \"{name}\" channels {channels}".format(file=args.infile,name=track.name,channels=track_channels))
-            priority_channels = priority_channels.union(track_channels)
-
-
-encoder = Encoder(args.num_drives, all_channels, priority_channels)
+encoder = Encoder([ [int(ch) for ch in drive.split(',')] for drive in args.orchestration ])
 for msg in midi:
     if msg.time > 0:
         encoder.log_delay(msg.time)

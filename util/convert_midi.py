@@ -165,19 +165,22 @@ class Encoder:
 midi = MidiFile(args.infile)
 
 # NOTE: 1 is added to channels to match user-visible channel numbers in e.g. MuseScore
-
-encoder = Encoder([ [int(ch) for ch in drive.split(',')] for drive in args.orchestration ])
+orchestration = [[int(ch) for ch in drive.split(',')] for drive in args.orchestration]
+included_channels = set([abs(ch) for sublist in orchestration for ch in sublist])
+encoder = Encoder(orchestration)
 for msg in midi:
     if msg.time > 0:
         encoder.log_delay(msg.time)
     if not msg.is_meta:
-        if msg.type == 'note_on':
-            if msg.velocity == 0:
-                encoder.log_note_off(msg.note, msg.channel + 1)
-            else:
-                encoder.log_note_on(msg.note, msg.channel + 1, msg.velocity)
-        elif msg.type == 'note_off':
-            encoder.log_note_off(msg.note, msg.channel + 1)
+        channel = msg.channel + 1
+        if channel in included_channels:
+            if msg.type == 'note_on':
+                if msg.velocity == 0:
+                    encoder.log_note_off(msg.note, channel)
+                else:
+                    encoder.log_note_on(msg.note, channel, msg.velocity)
+            elif msg.type == 'note_off':
+                encoder.log_note_off(msg.note, channel)
 
 if args.outfile == '-':
     buf = io.BytesIO()

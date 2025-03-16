@@ -21,23 +21,31 @@ def _update_sm_freq(sm, f):
     mem32[base + offset] = div << 8
     return True
 
-def _reset_drive(base_pin, tracks, target=0):
-    ds = Pin(base_pin, Pin.OUT, value=0)
-    dp = Pin(base_pin + 1, Pin.OUT, value=1)
-    step = Pin(base_pin + 2, Pin.OUT, value=1)
+def _reset_drives(count, scan_mask, tracks):
+    ds = [Pin(i * 3, Pin.OUT, value=0) for i in range(count)]
+    dp = [Pin(i * 3 + 1, Pin.OUT, value=1) for i in range(count)]
+    step = [Pin(i * 3 + 2, Pin.OUT, value=1) for i in range(count)]
     for _ in range(tracks):
-        step.value(0)
+        for pin in step:
+            pin.value(0)
         utime.sleep_ms(5)
-        step.value(1)
+        for pin in step:
+            pin.value(1)
         utime.sleep_ms(5)
-    dp.value(0)
+    for pin in dp:
+        pin.value(0)
     utime.sleep_ms(50)
-    for _ in range(target):
-        step.value(0)
+    for _ in range(tracks//2):
+        for i in range(count):
+            if scan_mask & (1 << i) == 0:
+                step[i].value(0)
         utime.sleep_ms(5)
-        step.value(1)
+        for i in range(count):
+            if scan_mask & (1 << i) == 0:
+                step[i].value(1)
         utime.sleep_ms(5)
-    ds.value(1)
+    for pin in ds:
+        pin.value(1)
     utime.sleep_ms(50)
 
 # scan back and forth across the disk
@@ -79,10 +87,10 @@ class Sound:
     def __init__(self, scan_mask = 0, tracks = 80):
         self.drive_select_pins = []
         self.state_machines = []        
+        _reset_drives(Sound.DRIVES, scan_mask, tracks)
         for drive in range(Sound.DRIVES):
             base_pin = drive * 3
             scan = scan_mask & (1 << drive) != 0
-            _reset_drive(base_pin, tracks, 0 if scan else tracks/2)
             self.drive_select_pins.append(Pin(base_pin, Pin.OUT, value=1))
             self.state_machines.append(
                 StateMachine(drive,

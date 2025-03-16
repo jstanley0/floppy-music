@@ -105,22 +105,39 @@ class Encoder:
         return None
 
     def _write_event(self, event):
-        # write delay
-        self._write_delay(event.delay)
-
-        # figure notes off and write notes on for each drive
+        # figure notes off, on, and retriggered
         notes_off_mask = 0
+        retrigger_mask = 0
+        notes_on = [None] * self.num_drives
         for v in range(self.num_drives):
             if self.notes_playing[v] in event.notes_off:
-                self.notes_playing[v] = None
                 notes_off_mask |= (1 << v)
 
             note_on = self._find_note_for_voice(v, event)
             if note_on is not None:
+                if (p := self.notes_playing[v]) and p.midi_note == note_on.midi_note:
+                    retrigger_mask |= (1 << v)
+                notes_on[v] = note_on
                 self.notes_playing[v] = note_on
-                self._write_note_on(v, note_on.midi_note)
-                # no need to write a note-off for this voice if we're starting a new note here now
-                notes_off_mask &= ~(1 << v)               
+                notes_off_mask &= ~(1 << v)
+
+            if notes_off_mask & (1 << v):
+                self.notes_playing[v] = None
+
+        # write the delay
+        # if we're retriggering note(s), squeeze in a note-off event 30ms ahead
+        # so they don't just run together
+        if retrigger_mask and event.delay > 0.03:
+            self._write_delay(event.delay - 0.03)
+            self._write_notes_off(retrigger_mask)
+            self._write_delay(0.03)
+        else:
+            self._write_delay(event.delay)
+
+        # write note-on events
+        for v in range(self.num_drives):
+            if notes_on[v]:
+                self._write_note_on(v, notes_on[v].midi_note)
 
         # write remaining notes off, if any
         if notes_off_mask != 0:
